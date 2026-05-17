@@ -1,4 +1,4 @@
-﻿$isAdmin = [System.Security.Principal.WindowsPrincipal]::new([System.Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
     Write-Host "`n╔══════════════════════════════════════════════════╗" -ForegroundColor Red
     Write-Host "║           ADMINISTRATOR PRIVILEGES REQUIRED       ║" -ForegroundColor Red
@@ -7,7 +7,7 @@ if (-not $isAdmin) {
     exit
 }
 
-Write-Host "made with love by lily<3" -ForegroundColor Cyan
+Write-Host "made with love by kol boy<3" -ForegroundColor Cyan
 Write-Host ""
 
 try {
