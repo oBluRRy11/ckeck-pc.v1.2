@@ -1,8 +1,9 @@
-$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
 if (-not $isAdmin) {
     Write-Host "`n╔══════════════════════════════════════════════════╗" -ForegroundColor Red
-    Write-Host "║           ADMINISTRATOR PRIVILEGES REQUIRED       ║" -ForegroundColor Red
-    Write-Host "║     Please run this script as Administrator!      ║" -ForegroundColor Red
+    Write-Host "║           ADMINISTRATOR PRIVILEGES REQUIRED     ║" -ForegroundColor Red
+    Write-Host "║        Please run as Administrator!             ║" -ForegroundColor Red
     Write-Host "╚══════════════════════════════════════════════════╝" -ForegroundColor Red
     exit
 }
