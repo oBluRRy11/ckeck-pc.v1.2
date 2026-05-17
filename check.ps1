@@ -1,375 +1,477 @@
-$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+cls
+cls
 
-if (-not $isAdmin) {
-    Write-Host "`n╔══════════════════════════════════════════════════╗" -ForegroundColor Red
-    Write-Host "║           ADMINISTRATOR PRIVILEGES REQUIRED     ║" -ForegroundColor Red
-    Write-Host "║        Please run as Administrator!             ║" -ForegroundColor Red
-    Write-Host "╚══════════════════════════════════════════════════╝" -ForegroundColor Red
+Write-Host ""
+Write-Host @"
+██╗  ██╗ ██████╗ ██╗         ██████╗  ██████╗ ██╗   ██╗
+██║ ██╔╝██╔═══██╗██║         ██╔══██╗██╔═══██╗╚██╗ ██╔╝
+█████╔╝ ██║   ██║██║         ██████╔╝██║   ██║ ╚████╔╝ 
+██╔═██╗ ██║   ██║██║         ██╔══██╗██║   ██║  ╚██╔╝  
+██║  ██╗╚██████╔╝███████╗    ██████╔╝╚██████╔╝   ██║   
+╚═╝  ╚═╝ ╚═════╝ ╚══════╝    ╚═════╝  ╚═════╝    ╚═╝                                                                             
+"@ -ForegroundColor Magenta
+Write-Host ""
+Write-Host "                                                                                           made by Kol Boy / 2021/2/11"
+Write-Host ""
+
+if (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator"))  
+{  
+  Write-Warning "This script requires Administrator privileges. Please run as Administrator."
+  exit
+}
+
+function Get-OldestConnectTime {
+    $oldestLogon = Get-CimInstance -ClassName Win32_LogonSession | 
+        Where-Object {$_.LogonType -eq 2 -or $_.LogonType -eq 10} | 
+        Sort-Object -Property StartTime | 
+        Select-Object -First 1
+    if ($oldestLogon) {
+        return $oldestLogon.StartTime
+    } else {
+        return $null
+    }
+}
+
+function Get-DeviceMappings {
+    $DynAssembly = New-Object System.Reflection.AssemblyName('SysUtils')
+    $AssemblyBuilder = [AppDomain]::CurrentDomain.DefineDynamicAssembly($DynAssembly, [Reflection.Emit.AssemblyBuilderAccess]::Run)
+    $ModuleBuilder = $AssemblyBuilder.DefineDynamicModule('SysUtils', $False)
+    $TypeBuilder = $ModuleBuilder.DefineType('Kernel32', 'Public, Class')
+    $PInvokeMethod = $TypeBuilder.DefinePInvokeMethod('QueryDosDevice', 'kernel32.dll', ([Reflection.MethodAttributes]::Public -bor [Reflection.MethodAttributes]::Static), [Reflection.CallingConventions]::Standard, [UInt32], [Type[]]@([String], [Text.StringBuilder], [UInt32]), [Runtime.InteropServices.CallingConvention]::Winapi, [Runtime.InteropServices.CharSet]::Auto)
+    $DllImportConstructor = [Runtime.InteropServices.DllImportAttribute].GetConstructor(@([String]))
+    $SetLastError = [Runtime.InteropServices.DllImportAttribute].GetField('SetLastError')
+    $SetLastErrorCustomAttribute = New-Object Reflection.Emit.CustomAttributeBuilder($DllImportConstructor, @('kernel32.dll'), [Reflection.FieldInfo[]]@($SetLastError), @($true))
+    $PInvokeMethod.SetCustomAttribute($SetLastErrorCustomAttribute)
+    $Kernel32 = $TypeBuilder.CreateType()
+    $Max = 65536
+    $StringBuilder = New-Object System.Text.StringBuilder($Max)
+    $driveMappings = Get-WmiObject Win32_Volume | Where-Object { $_.DriveLetter } | ForEach-Object {
+        $ReturnLength = $Kernel32::QueryDosDevice($_.DriveLetter, $StringBuilder, $Max)
+        if ($ReturnLength) {
+            @{
+                DriveLetter = $_.DriveLetter
+                DevicePath = $StringBuilder.ToString().ToLower()
+            }
+        }
+    }
+    return $driveMappings
+}
+
+function Convert-DevicePathToDriveLetter {
+    param (
+        [string]$DevicePath,
+        $DeviceMappings
+    )
+    foreach ($mapping in $DeviceMappings) {
+        if ($DevicePath -like ($mapping.DevicePath + "*")) {
+            return $DevicePath -replace [regex]::Escape($mapping.DevicePath), $mapping.DriveLetter
+        }
+    }
+    return $DevicePath
+}
+
+function Get-FileSignature {
+    param (
+        [string]$FilePath
+    )
+    if (Test-Path $FilePath) {
+        $signature = Get-AuthenticodeSignature -FilePath $FilePath
+        if ($signature.Status -eq 'Valid') {
+            if ($signature.SignerCertificate.Subject -like "*Manthe Industries, LLC*") {
+                return "Not signed (vapeclient)"
+            }
+            if ($signature.SignerCertificate.Subject -like "*Slinkware*") {
+                return "Not signed (slinky)"
+            } else {
+                return "Signed"
+            }
+        } else {
+            return "Not signed"
+        }
+    } else {
+        return "Deleted"
+    }
+}
+
+$oldestConnectTime = Get-OldestConnectTime
+
+$deviceMappings = Get-DeviceMappings
+
+$ErrorActionPreference = 'SilentlyContinue'
+
+if (!(Get-PSDrive -Name HKLM -PSProvider Registry)){
+    Try{New-PSDrive -Name HKLM -PSProvider Registry -Root HKEY_LOCAL_MACHINE}
+    Catch{}
+}
+
+$bv = ("bam", "bam\State")
+$Users = @()
+foreach($ii in $bv){
+    $Users += Get-ChildItem -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$($ii)\UserSettings\" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty PSChildName
+}
+
+if ($Users.Count -eq 0) {
+    Write-Host "No BAM entries found. This system may not be compatible."
     exit
 }
 
-Write-Host "made with love by kol boy<3" -ForegroundColor Cyan
-Write-Host ""
+$rpath = @("HKLM:\SYSTEM\CurrentControlSet\Services\bam\","HKLM:\SYSTEM\CurrentControlSet\Services\bam\state\")
 
-try {
-    $bootTime = (Get-CimInstance -ClassName Win32_OperatingSystem).LastBootUpTime
-    $uptime = (Get-Date) - $bootTime
-    Write-Host "SYSTEM BOOT TIME" -ForegroundColor Cyan
-    Write-Host ("  Last Boot: {0}" -f $bootTime.ToString("yyyy-MM-dd HH:mm:ss")) -ForegroundColor White
-    Write-Host ("  Uptime: {0} days, {1:D2}:{2:D2}:{3:D2}" -f $uptime.Days, $uptime.Hours, $uptime.Minutes, $uptime.Seconds) -ForegroundColor White
-} catch {
-    Write-Host "Unable to retrieve boot time information" -ForegroundColor Red
-}
+$UserTime = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation" -ErrorAction SilentlyContinue).TimeZoneKeyName
+$UserBias = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation" -ErrorAction SilentlyContinue).ActiveTimeBias
+$UserDay = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation" -ErrorAction SilentlyContinue).DaylightBias
 
-$drives = Get-CimInstance -ClassName Win32_LogicalDisk | Where-Object { $_.DriveType -ne 5 }
-if ($drives) {
-    Write-Host "`nCONNECTED DRIVES" -ForegroundColor Cyan
-    foreach ($drive in $drives) {
-        Write-Host ("  {0}: {1}" -f $drive.DeviceID, $drive.FileSystem) -ForegroundColor Green
-    }
-}
-
-Write-Host "`nSERVICE STATUS" -ForegroundColor Cyan
-
-$services = @(
-    @{Name = "SysMain"; DisplayName = "SysMain"},
-    @{Name = "PcaSvc"; DisplayName = "Program Compatibility Assistant Service"},
-    @{Name = "DPS"; DisplayName = "Diagnostic Policy Service"},
-    @{Name = "EventLog"; DisplayName = "Windows Event Log"},
-    @{Name = "Schedule"; DisplayName = "Task Scheduler"},
-    @{Name = "Bam"; DisplayName = "Background Activity Moderator"},
-    @{Name = "Dusmsvc"; DisplayName = "Data Usage"},
-    @{Name = "Appinfo"; DisplayName = "Application Information"},
-    @{Name = "CDPSvc"; DisplayName = "Connected Devices Platform Service"},
-    @{Name = "DcomLaunch"; DisplayName = "DCOM Server Process Launcher"},
-    @{Name = "PlugPlay"; DisplayName = "Plug and Play"},
-    @{Name = "wsearch"; DisplayName = "Windows Search"}
-)
-
-foreach ($svc in $services) {
-    $service = Get-Service -Name $svc.Name -ErrorAction SilentlyContinue
-    if ($service) {
-        if ($service.Status -eq "Running") {
-            $displayName = $service.DisplayName
-            if ($displayName.Length -gt 40) {
-                $displayName = $displayName.Substring(0, 37) + "..."
-            }
-            Write-Host ("  {0,-12} {1,-40}" -f $svc.Name, $displayName) -ForegroundColor Green -NoNewline
-            
-            if ($svc.Name -eq "Bam") {
-                Write-Host " | Enabled" -ForegroundColor Yellow
-            } else {
-                try {
-                    $process = Get-CimInstance Win32_Service -Filter "Name='$($svc.Name)'" | Select-Object ProcessId
-                    if ($process.ProcessId -gt 0) {
-                        $proc = Get-Process -Id $process.ProcessId -ErrorAction SilentlyContinue
-                        if ($proc) {
-                            Write-Host (" | {0}" -f $proc.StartTime.ToString("HH:mm:ss")) -ForegroundColor Yellow
-                        } else {
-                            Write-Host " | N/A" -ForegroundColor Yellow
-                        }
-                    } else {
-                        Write-Host " | N/A" -ForegroundColor Yellow
-                    }
-                } catch {
-                    Write-Host " | N/A" -ForegroundColor Yellow
-                }
-            }
-        } else {
-            $displayName = $service.DisplayName
-            if ($displayName.Length -gt 40) {
-                $displayName = $displayName.Substring(0, 37) + "..."
-            }
-            Write-Host ("  {0,-12} {1,-40} {2}" -f $svc.Name, $displayName, $service.Status) -ForegroundColor Red
-        }
-    } else {
-        Write-Host ("  {0,-12} {1,-40} {2}" -f $svc.Name, "Not Found", "Stopped") -ForegroundColor Yellow
-    }
-}
-
-Write-Host "`nREGISTRY" -ForegroundColor Cyan
-
-$settings = @(
-    @{ Name = "CMD"; Path = "HKCU:\Software\Policies\Microsoft\Windows\System"; Key = "DisableCMD"; Warning = "Disabled"; Safe = "Available" },
-    @{ Name = "PowerShell Logging"; Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging"; Key = "EnableScriptBlockLogging"; Warning = "Disabled"; Safe = "Enabled" },
-    @{ Name = "Activities Cache"; Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System"; Key = "EnableActivityFeed"; Warning = "Disabled"; Safe = "Enabled" },
-    @{ Name = "Prefetch Enabled"; Path = "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters"; Key = "EnablePrefetcher"; Warning = "Disabled"; Safe = "Enabled" }
-)
-
-foreach ($s in $settings) {
-    $status = Get-ItemProperty -Path $s.Path -Name $s.Key -ErrorAction SilentlyContinue
-    Write-Host "  " -NoNewline
-    if ($status -and $status.$($s.Key) -eq 0) {
-        Write-Host "$($s.Name): " -NoNewline -ForegroundColor White
-        Write-Host "$($s.Warning)" -ForegroundColor Red
-    } else {
-        Write-Host "$($s.Name): " -NoNewline -ForegroundColor White
-        Write-Host "$($s.Safe)" -ForegroundColor Green
-    }
-}
-
-function Check-EventLog {
-    param ($logName, $eventID, $message)
-    $event = Get-WinEvent -LogName $logName -FilterXPath "*[System[EventID=$eventID]]" -MaxEvents 1 -ErrorAction SilentlyContinue
-    if ($event) {
-        Write-Host "  $message at: " -NoNewline -ForegroundColor White
-        Write-Host $event.TimeCreated.ToString("MM/dd HH:mm") -ForegroundColor Yellow
-    } else {
-        Write-Host "  $message - No records found" -ForegroundColor Green
-    }
-}
-
-function Check-RecentEventLog {
-    param ($logName, $eventIDs, $message)
-    $event = Get-WinEvent -LogName $logName -FilterXPath "*[System[EventID=$($eventIDs -join ' or EventID=')]]" -MaxEvents 1 -ErrorAction SilentlyContinue
-    if ($event) {
-        Write-Host "  $message (ID: $($event.Id)) at: " -NoNewline -ForegroundColor White
-        Write-Host $event.TimeCreated.ToString("MM/dd HH:mm") -ForegroundColor Yellow
-    } else {
-        Write-Host "  $message - No records found" -ForegroundColor Green
-    }
-}
-
-function Check-DeviceDeleted {
-    try {
-        $event = Get-WinEvent -LogName "Microsoft-Windows-Kernel-PnP/Configuration" -FilterXPath "*[System[EventID=400]]" -MaxEvents 1 -ErrorAction SilentlyContinue
-        if ($event) {
-            Write-Host "  Device configuration changed at: " -NoNewline -ForegroundColor White
-            Write-Host $event.TimeCreated.ToString("MM/dd HH:mm") -ForegroundColor Yellow
-            return
-        }
-    } catch {}
-
-    try {
-        $event = Get-WinEvent -FilterHashtable @{LogName="System"; ID=225} -MaxEvents 1 -ErrorAction SilentlyContinue
-        if ($event) {
-            Write-Host "  Device removed at: " -NoNewline -ForegroundColor White
-            Write-Host $event.TimeCreated.ToString("MM/dd HH:mm") -ForegroundColor Yellow
-            return
-        }
-    } catch {}
-
-    try {
-        $events = Get-WinEvent -LogName "System" | Where-Object {$_.Id -eq 225 -or $_.Id -eq 400} | Sort-Object TimeCreated -Descending | Select-Object -First 1
-        if ($events) {
-            Write-Host "  Last device change at: " -NoNewline -ForegroundColor White
-            Write-Host $events.TimeCreated.ToString("MM/dd HH:mm") -ForegroundColor Yellow
-            return
-        }
-    } catch {}
-
-    Write-Host "  Device changes - No records found" -ForegroundColor Green
-}
-
-Write-Host "`nEVENT LOGS" -ForegroundColor Cyan
-
-Check-EventLog "Application" 3079 "USN Journal cleared"
-Check-RecentEventLog "System" @(104, 1102) "Event Logs cleared"
-Check-EventLog "System" 1074 "Last PC Shutdown"
-Check-EventLog "Security" 4616 "System time changed"
-Check-EventLog "System" 6005 "Event Log Service started"
-Check-DeviceDeleted
-
-
-$prefetchPath = "$env:SystemRoot\Prefetch"
-if (Test-Path $prefetchPath) {
-    Write-Host "`nPREFETCH INTEGRITY" -ForegroundColor Cyan
-    
-    $files = Get-ChildItem -Path $prefetchPath -Filter *.pf -Force -ErrorAction SilentlyContinue
-    if (-not $files) {
-        Write-Host "  No prefetch found?? Check the folder please" -ForegroundColor Yellow
-    } else {
-        $hashTable = @{}
-        $suspiciousFiles = @{}
-        $totalFiles = $files.Count
-
-        $hiddenFiles = @()
-        $readOnlyFiles = @()
-        $hiddenAndReadOnlyFiles = @()
-        $errorFiles = @()
-
-        foreach ($file in $files) {
-            try {
-                $isHidden = $file.Attributes -band [System.IO.FileAttributes]::Hidden
-                $isReadOnly = $file.Attributes -band [System.IO.FileAttributes]::ReadOnly
-                
-                if ($isHidden -and $isReadOnly) {
-                    $hiddenAndReadOnlyFiles += $file
-                    if (-not $suspiciousFiles.ContainsKey($file.Name)) {
-                        $suspiciousFiles[$file.Name] = "Hidden and Read-only"
-                    }
-                } elseif ($isHidden) {
-                    $hiddenFiles += $file
-                    if (-not $suspiciousFiles.ContainsKey($file.Name)) {
-                        $suspiciousFiles[$file.Name] = "Hidden file"
-                    }
-                } elseif ($isReadOnly) {
-                    $readOnlyFiles += $file
-                    if (-not $suspiciousFiles.ContainsKey($file.Name)) {
-                        $suspiciousFiles[$file.Name] = "Read-only file"
-                    }
-                }
-
-                $hash = Get-FileHash -Path $file.FullName -Algorithm SHA256 -ErrorAction SilentlyContinue
-                if ($hash) {
-                    if ($hashTable.ContainsKey($hash.Hash)) {
-                        $hashTable[$hash.Hash].Add($file.Name)
-                    } else {
-                        $hashTable[$hash.Hash] = [System.Collections.Generic.List[string]]::new()
-                        $hashTable[$hash.Hash].Add($file.Name)
-                    }
-                }
-            } catch {
-                $errorFiles += $file
-                if (-not $suspiciousFiles.ContainsKey($file.Name)) {
-                    $suspiciousFiles[$file.Name] = "Error analyzing file: $($_.Exception.Message)"
-                }
-            }
-        }
-
-        if ($hiddenAndReadOnlyFiles.Count -gt 0) {
-            Write-Host "  Hidden & Read-only Files: $($hiddenAndReadOnlyFiles.Count) found" -ForegroundColor Yellow
-            foreach ($file in $hiddenAndReadOnlyFiles) {
-                Write-Host ("    {0}" -f $file.Name) -ForegroundColor White
-            }
-        }
-
-        if ($hiddenFiles.Count -gt 0) {
-            Write-Host "  Hidden Files: $($hiddenFiles.Count) found" -ForegroundColor Yellow
-            foreach ($file in $hiddenFiles) {
-                Write-Host ("    {0}" -f $file.Name) -ForegroundColor White
-            }
-        } else {
-            Write-Host "  Hidden Files: None" -ForegroundColor Green
-        }
-
-        if ($readOnlyFiles.Count -gt 0) {
-            Write-Host "  Read-Only Files: $($readOnlyFiles.Count)" -ForegroundColor Yellow
-            foreach ($file in $readOnlyFiles) {
-                Write-Host ("    {0}" -f $file.Name) -ForegroundColor White
-            }
-        } else {
-            Write-Host "  Read-Only Files: None" -ForegroundColor Green
-        }
-
-        $repeatedHashes = $hashTable.GetEnumerator() | Where-Object { $_.Value.Count -gt 1 }
-        if ($repeatedHashes) {
-            Write-Host "  Duplicate Files: $($repeatedHashes.Count) sets found" -ForegroundColor Yellow
-            foreach ($entry in $repeatedHashes) {
-                foreach ($file in $entry.Value) {
-                    if (-not $suspiciousFiles.ContainsKey($file)) {
-                        $suspiciousFiles[$file] = "Duplicate file"
-                    }
-                }
-                Write-Host ("    Duplicate set: {0}" -f ($entry.Value -join ", ")) -ForegroundColor White
-            }
-        } else {
-            Write-Host "  Duplicates: None" -ForegroundColor Green
-        }
-
-        if ($suspiciousFiles.Count -gt 0) {
-            Write-Host "`n  SUSPICIOUS FILES FOUND: $($suspiciousFiles.Count)/$totalFiles" -ForegroundColor Yellow
-            foreach ($entry in $suspiciousFiles.GetEnumerator() | Sort-Object Key) {
-                Write-Host ("    {0} : {1}" -f $entry.Key, $entry.Value) -ForegroundColor White
-            }
-        } else {
-            Write-Host "`n  Prefetch integrity: Clean ($totalFiles files checked)" -ForegroundColor Green
-        }
-    }
-} else {
-    Write-Host "`nCouldnt find prefetch folder?? (check yo paths hoe)" -ForegroundColor Red
-}
-
-try {
-    $recycleBinPath = "$env:SystemDrive" + '\$Recycle.Bin'
-    
-    Write-Host "`nRecycle Bin" -ForegroundColor Cyan
-
-    if (Test-Path $recycleBinPath) {
-        $recycleBinFolder = Get-Item -LiteralPath $recycleBinPath -Force
-        $userFolders = Get-ChildItem -LiteralPath $recycleBinPath -Directory -Force -ErrorAction SilentlyContinue
+$Bam = @()
+Foreach ($Sid in $Users) {
+    foreach($rp in $rpath){
+        $BamItems = Get-Item -Path "$($rp)UserSettings\$Sid" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Property
         
-        if ($userFolders) {
-            $allDeletedItems = @()
-            $latestModTime = $recycleBinFolder.LastWriteTime
-            
-            foreach ($userFolder in $userFolders) {
-                if ($userFolder.LastWriteTime -gt $latestModTime) {
-                    $latestModTime = $userFolder.LastWriteTime
-                }
+        Try{
+            $objSID = New-Object System.Security.Principal.SecurityIdentifier($Sid)
+            $User = $objSID.Translate( [System.Security.Principal.NTAccount]) 
+            $User = $User.Value
+        }
+        Catch{$User=""}
+        
+        ForEach ($Item in $BamItems){
+            $Key = Get-ItemProperty -Path "$($rp)UserSettings\$Sid" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty $Item
+    
+            If($key.length -eq 24){
+                $Hex=[System.BitConverter]::ToString($key[7..0]) -replace "-",""
+                $Bias = -([convert]::ToInt32([Convert]::ToString($UserBias,2),2))
+                $TimeUser = (Get-Date ([DateTime]::FromFileTimeUtc([Convert]::ToInt64($Hex, 16))).addminutes($Bias) -Format "yyyy-MM-dd HH:mm:ss") 
                 
-                $userItems = Get-ChildItem -LiteralPath $userFolder.FullName -File -Force -ErrorAction SilentlyContinue
-                if ($userItems) {
-                    $allDeletedItems += $userItems
+                if ([DateTime]::ParseExact($TimeUser, "yyyy-MM-dd HH:mm:ss", $null) -ge $oldestConnectTime) {
+                    $f = if((((split-path -path $item) | ConvertFrom-String -Delimiter "\\").P3)-match '\d{1}')
+                    {Split-path -leaf ($item).TrimStart()} else {$item}
                     
-                    $latestFile = $userItems | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-                    if ($latestFile -and $latestFile.LastWriteTime -gt $latestModTime) {
-                        $latestModTime = $latestFile.LastWriteTime
+                    $path = Convert-DevicePathToDriveLetter -DevicePath $item -DeviceMappings $deviceMappings
+                    
+                    $signature = Get-FileSignature -FilePath $path
+                    
+                    $Bam += [PSCustomObject]@{
+                        'Last Execution User Time' = $TimeUser
+                        Path = $path
+                        'Digital Signature' = $signature
+                        'File Name' = $f
                     }
                 }
             }
-            
-            Write-Host "  Last Modified: " -NoNewline -ForegroundColor White
-            Write-Host $latestModTime.ToString("yyyy-MM-dd HH:mm:ss") -ForegroundColor Yellow
-            
-            if ($allDeletedItems.Count -gt 0) {
-                Write-Host "  Total Items: " -NoNewline -ForegroundColor White
-                Write-Host $allDeletedItems.Count -ForegroundColor Yellow
-                
-                $latestItem = $allDeletedItems | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-                Write-Host "  Latest Item: " -NoNewline -ForegroundColor White
-                Write-Host $latestItem.Name -ForegroundColor Gray
-            } else {
-                Write-Host "  Status: " -NoNewline -ForegroundColor White
-                Write-Host "Folders present but empty" -ForegroundColor Green
-            }
-        } else {
-            Write-Host "  Status: " -NoNewline -ForegroundColor White
-            Write-Host "Emptyy" -ForegroundColor Green
-            Write-Host "  Last Modified: " -NoNewline -ForegroundColor White
-            Write-Host $recycleBinFolder.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss") -ForegroundColor Green
         }
-        
-        $clearEvent = Get-WinEvent -FilterHashtable @{LogName="System"; Id=10006} -MaxEvents 1 -ErrorAction SilentlyContinue
-        if ($clearEvent) {
-            Write-Host "  Last Cleared (Event): " -NoNewline -ForegroundColor White
-            Write-Host $clearEvent.TimeCreated.ToString("yyyy-MM-dd HH:mm:ss") -ForegroundColor Red
-        }
-    } else {
-        Write-Host "  Recycle Bin not found at: $recycleBinPath" -ForegroundColor Yellow
-        Write-Host "  Note: Recycle Bin may be empty or on different drive" -ForegroundColor Gray
     }
-
-
-    $consoleHistoryPath = "$env:USERPROFILE\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt"
-    Write-Host "`n  Console Host History:" -ForegroundColor Cyan
-    
-    if (Test-Path $consoleHistoryPath) {
-        $historyFile = Get-Item -Path $consoleHistoryPath -Force
-        Write-Host "    Last Modified: " -NoNewline -ForegroundColor White
-        Write-Host $historyFile.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss") -ForegroundColor Yellow
-        
-
-        $attributes = $historyFile.Attributes
-        if ($attributes -ne "Archive") {
-            Write-Host "    Attributes: " -NoNewline -ForegroundColor White
-            Write-Host $attributes -ForegroundColor Yellow
-        } else {
-            Write-Host "    Attributes: Normal" -ForegroundColor Green
-        }
-        
-
-        $fileSize = $historyFile.Length
-        Write-Host "    File Size: " -NoNewline -ForegroundColor White
-        Write-Host "$([math]::Round($fileSize/1024, 2)) KB" -ForegroundColor Yellow
-        
-    } else {
-        Write-Host "    File not found: $consoleHistoryPath" -ForegroundColor Yellow
-        Write-Host "    Note: PowerShell history may be disabled or never used" -ForegroundColor Gray
-    }
-
-} catch {
-    Write-Host "  Error accessing system information: $($_.Exception.Message)" -ForegroundColor Red
 }
 
-Write-Host "`nCheck Complete, hit up @praiselily if u run into any issues." -ForegroundColor Cyan
+$ErrorActionPreference = 'Continue'
+
+$ContenidoHtml = @'
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BAM Signature</title>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --background-color: #121212;
+        --surface-color: #1e1e1e;
+        --primary-color: #64b5f6;
+        --text-color: #e0e0e0;
+        --hover-color: #2196f3;
+      }
+      body {
+        font-family: "Roboto", sans-serif;
+        background-color: var(--background-color);
+        color: var(--text-color);
+        margin: 0;
+        padding: 0px 20px;
+        transition: all 0.1s ease;
+      }
+      h1 {
+        color: var(--primary-color);
+        text-align: center;
+        margin-bottom: 30px;
+        font-weight: 300;
+        font-size: 2.5em;
+      }
+      .search-container {
+        position: fixed;
+        top: 20px;
+        left: 20px;
+        right: 20px;
+        z-index: 1000;
+        background-color: var(--surface-color);
+        padding: 15px;
+        border-radius: 8px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+      }
+      #search {
+        width: calc(100% - 30px);
+        padding: 10px 15px;
+        border: none;
+        border-radius: 4px;
+        background-color: var(--background-color);
+        color: var(--text-color);
+        font-family: "Roboto", sans-serif;
+        transition: all 0.1s ease;
+      }
+      #search:hover {
+        outline: none;
+        box-shadow: 0 0 0 2px #64b4f6d8;
+      }
+      #search:focus {
+        outline: none;
+        box-shadow: 0 0 0 2px var(--primary-color);
+      }
+      table {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0 8px;
+        margin-top: 90px; /* Ajustado para dejar espacio para la barra de búsqueda fija */
+      }
+      th,
+      td {
+        padding: 15px;
+        text-align: left;
+        transition: all 0.24s ease;
+      }
+      th {
+        background-color: var(--surface-color);
+        color: var(--primary-color);
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        cursor: pointer;
+        position: relative;
+      }
+      th:hover {
+        background-color: var(--hover-color);
+        color: var(--background-color);
+      }
+      th.asc::after,
+      th.desc::after {
+        position: absolute;
+        right: 8px;
+        top: 50%;
+        transform: translateY(-50%);
+        font-size: 0.8em;
+      }
+      th.asc::after {
+        content: "▲";
+      }
+      th.desc::after {
+        content: "▼";
+      }
+      tr {
+        background-color: var(--surface-color);
+        transition: all 0.24s ease;
+      }
+      tr:hover {
+        transform: translateY(-2px);
+        scale: 1.013;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+      }
+      @keyframes fadeIn {
+        from {
+          opacity: 0;
+          transform: translateY(20px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      .fade-in {
+        /* animation: fadeIn 0.15s ease-out; */
+      }
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+main {
+  flex: 1;
+}
+
+footer {
+  text-align: center;
+  font-size: 0.9em;
+  color: var(--text-color);
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  background-color: var(--background-color);
+  padding: 10px 0;
+}
+
+footer a {
+  color: var(--primary-color);
+  text-decoration: none;
+  position: relative;
+  transition: color 0.18s ease-in-out;
+}
+
+footer a:hover {
+  color: #33a3ff;
+}
+
+footer a::after {
+  content: "";
+  position: absolute;
+  width: 100%;
+  height: 2px;
+  background-color: #33a3ff;
+  color: #33a3ff;
+  bottom: -1px;
+  left: 0;
+  transform: scaleX(0);
+  transform-origin: right;
+  transition: transform 0.18s ease-in-out;
+}
+
+footer a:hover::after {
+  transform: scaleX(1);
+  transform-origin: left;
+}
+
+
+    </style>
+  </head>
+ <body>
+  <main>
+    <div class="search-container fade-in">
+      <input type="text" id="search" placeholder="Search..." />
+    </div>
+
+    <table id="entriesTable" class="fade-in">
+      <thead>
+        <tr>
+          <th data-sort="time">Last Execution</th>
+          <th data-sort="path">Path</th>
+          <th data-sort="signature">Digital Signature</th>
+          <th data-sort="fileName">File Name</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </main>
+
+  <footer class="fade-in">
+    Made by espouken
+    <a href="https://discordapp.com/users/1149799913727721485" target="_blank">Discord</a>
+    <a href="https://github.com/spokwn" target="_blank">Github</a>
+  </footer>
+
+
+    <script>
+      const entries = [
+'@
+
+foreach ($entry in $Bam) {
+    $escapedTime = $entry.'Last Execution User Time'.Replace("\", "\\")
+    $escapedPath = $entry.Path.Replace("\", "\\")
+    $escapedSignature = $entry.'Digital Signature'.Replace("\", "\\")
+    $escapedFileName = $entry.'File Name'.Replace("\", "\\")
+    $ContenidoHtml += @"
+        {
+          time: "$escapedTime",
+          path: "$escapedPath",
+          signature: "$escapedSignature",
+          fileName: "$escapedFileName"
+        },
+"@
+}
+
+$ContenidoHtml += @'
+      ];
+
+      let currentSort = { column: "time", direction: "asc" };
+
+      function populateTable(data) {
+        const tbody = document.querySelector("#entriesTable tbody");
+        tbody.innerHTML = "";
+        data.forEach((entry, index) => {
+          const row = document.createElement("tr");
+          row.className = "fade-in";
+          row.style.animationDelay = `${index * 0.1}s`;
+          row.innerHTML = `
+                    <td>${entry.time}</td>
+                    <td>${entry.path}</td>
+                    <td>${entry.signature}</td>
+                    <td>${entry.fileName}</td>
+                `;
+          tbody.appendChild(row);
+        });
+      }
+
+      function applyFilters() {
+        let filteredEntries = [...entries];
+        const searchTerm = document
+          .getElementById("search")
+          .value.toLowerCase();
+
+        filteredEntries = filteredEntries.filter((entry) =>
+          Object.values(entry).some((value) =>
+            value.toLowerCase().includes(searchTerm)
+          )
+        );
+
+        filteredEntries.sort((a, b) => {
+          const aValue = a[currentSort.column];
+          const bValue = b[currentSort.column];
+          if (currentSort.direction === "asc") {
+            return aValue.localeCompare(bValue);
+          } else {
+            return bValue.localeCompare(aValue);
+          }
+        });
+
+        populateTable(filteredEntries);
+        updateSortIndicators();
+      }
+
+      function updateSortIndicators() {
+        document.querySelectorAll("th").forEach((th) => {
+          th.classList.remove("asc", "desc");
+          if (th.dataset.sort === currentSort.column) {
+            th.classList.add(currentSort.direction);
+          }
+        });
+      }
+
+      document.getElementById("search").addEventListener("input", applyFilters);
+
+      document.querySelectorAll("th[data-sort]").forEach((th) => {
+        th.addEventListener("click", () => {
+          const column = th.dataset.sort;
+          if (currentSort.column === column) {
+            currentSort.direction =
+              currentSort.direction === "asc" ? "desc" : "asc";
+          } else {
+            currentSort.column = column;
+            currentSort.direction = "asc";
+          }
+          applyFilters();
+        });
+      });
+
+      applyFilters();
+    </script>
+  </body>
+</html>
+'@
+
+
+$htmlFilePath = Join-Path $env:TEMP "BAMKeyEntries.html"
+$ContenidoHtml | Out-File -FilePath $htmlFilePath -Encoding UTF8
+
+
+Start-Process $htmlFilePath
